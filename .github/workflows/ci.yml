@@ -120,6 +120,9 @@ jobs:
       - name: the text layer finds the sourcing line the README quotes
         run: |
           HOME_DIR=$(examples/build.sh)
+          # The $PS1 below is the text being written to the file, not an
+          # expansion, and this is the exact line the README tells you to run.
+          # shellcheck disable=SC2016
           printf '\n[ -z "$PS1" ] && return\n. ~/.bashrc\n' >> "$HOME_DIR/.bash_profile"
           whichrc --home "$HOME_DIR" > sourced.txt || test $? -le 1
           cat sourced.txt
