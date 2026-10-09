@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -82,14 +83,19 @@ def _first_later_round(
 
 
 def _unread_reason(shells: list[sh.Shell], name: str) -> str:
-    family = cand.family_of(name)
-    wanted = cand.FAMILY_SHELLS.get(family, ())
-    installed = {s.name for s in sh.probeable(shells)}
-    missing = [n for n in wanted if n not in installed]
-    if wanted and not (set(wanted) & installed):
-        which = missing[0] if len(missing) == 1 else " or ".join(missing)
+    wanted = cand.FAMILY_SHELLS.get(cand.family_of(name), ())
+    probed = {s.name for s in sh.probeable(shells)}
+    if not wanted or (set(wanted) & probed):
+        return "no shell here reads it in any mode, even with every other startup file removed"
+    # The file belongs to a shell nobody asked. Whether that is because it is
+    # not installed or because --shell left it out is a different sentence,
+    # and getting it wrong makes the tool sound surer than it is.
+    absent = [n for n in wanted if shutil.which(n) is None]
+    if absent:
+        which = " or ".join(absent)
         return f"no shell here reads this name; {which} is not installed on this machine"
-    return "no shell here reads it in any mode, even with every other startup file removed"
+    which = " or ".join(n for n in wanted if n not in probed)
+    return f"no shell here reads this name; {which} is installed but whichrc did not probe it"
 
 
 def _findings(report: Report, timeout: float) -> list[Finding]:

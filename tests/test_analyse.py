@@ -60,6 +60,18 @@ def test_an_unread_file_whose_shell_is_missing_says_so(
     assert "zsh is not installed" in report.findings[0].message
 
 
+def test_an_unread_file_whose_shell_was_merely_skipped_says_that_instead(
+    home: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """"zsh is not installed" and "we did not ask zsh" are different claims."""
+    (tmp_path / "zsh").write_text("#!/bin/sh\nexit 0\n")
+    (tmp_path / "zsh").chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    write(home, ".zshrc")
+    report = run(home, fake_shell(tmp_path, [], name="notzsh"))
+    assert "installed but whichrc did not probe it" in report.findings[0].message
+
+
 def test_a_missing_shell_path_is_reported_not_probed(home: Path, clean_env) -> None:
     write(home, ".profile")
     report = analyse.run(home, shell_paths=[Path("/nonexistent/sh")], timeout=5)
