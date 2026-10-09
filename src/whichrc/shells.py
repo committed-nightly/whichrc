@@ -68,7 +68,12 @@ def discover(names: tuple[str, ...] = KNOWN) -> list[Shell]:
             continue
         path = Path(found)
         real = path.resolve()
-        if real in seen and seen[real] != name:
+        # /bin/sh is usually a link to one of the others. Probing the same
+        # binary twice under two names would double the table and say the same
+        # thing, so the second name is reported as what it is instead -- which
+        # is the useful part anyway: "sh is bash here" decides whether every
+        # `sh -c` on the box is in bash's rules.
+        if real in seen:
             shells.append(
                 Shell(name, path, skipped=f"the same binary as {seen[real]} ({real})")
             )
