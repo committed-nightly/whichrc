@@ -1,0 +1,184 @@
+name: CI
+
+'on':
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # Most of the suite skips without bash, so assert it is here rather than
+      # let a run that tested almost nothing report green.
+      - name: bash is present
+        run: bash --version | head -1
+
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install ruff
+      - run: ruff check .
+
+      # examples/build.sh is the first thing a reader runs, so it gets linted
+      # like everything else. shellcheck is preinstalled on the runner.
+      - name: shellcheck
+        run: shellcheck examples/build.sh
+
+  dogfood:
+    # The README quotes this output. If the tool stops producing it, the README
+    # is wrong, and a README that no longer describes the tool is the thing
+    # this job exists to catch.
+    runs-on: ubuntu-latest
+    env:
+      # The login section follows $SHELL, and a runner's SHELL is not ours to
+      # rely on. Pinned so the assertions below are about the tool.
+      SHELL: /usr/bin/bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e .
+
+      - name: the login section says what the README says it says
+        run: |
+          HOME_DIR=$(examples/build.sh)
+          whichrc --home "$HOME_DIR" > out.txt || test $? -le 1
+          cat out.txt
+          grep -qx 'A login session here starts bash (SHELL=/usr/bin/bash). It reads:' out.txt
+          grep -qx '  .bash_profile then .bash_logout' out.txt
+          grep -q '^  \.bashrc  *bash reads it in interactive and command over ssh, but not here$' out.txt
+          grep -q '^  \.bash_login  *only if \.bash_profile were gone$' out.txt
+          grep -q '^  \.profile  *only if \.bash_profile and \.bash_login were gone$' out.txt
+
+      - name: the zsh-dependent lines are right for whichever runner this is
+        # The README's example output was taken on a machine with no zsh, and
+        # says so. A runner that has zsh must get the other answer, not the
+        # README's -- a claim that only holds on the author's box is the
+        # defect this step exists to catch.
+        run: |
+          HOME_DIR=$(examples/build.sh)
+          whichrc --home "$HOME_DIR" > out.txt || test $? -le 1
+          if command -v zsh > /dev/null; then
+            echo "zsh is installed here, so ~/.zshrc is read and is not a finding"
+            if grep -q '^/.*\.zshrc: unread' <(whichrc --home "$HOME_DIR" -q); then
+              echo "called .zshrc unread on a machine that has zsh"; exit 1
+            fi
+            grep -q '^  \.zshrc' out.txt
+          else
+            echo "no zsh here, so ~/.zshrc is read by nothing"
+            grep -q 'zsh is not installed on this machine' out.txt
+          fi
+
+      - name: the ssh mode is probed as a top-level shell
+        # bash only sources ~/.bashrc for an sshd-started shell when SHLVL
+        # says it is top-level, so a probe that inherits SHLVL reports
+        # `nothing` for the mode whose answer people most want. That shipped
+        # in the first draft of the README. On a bash built without
+        # SSH_SOURCE_BASHRC both rows are `nothing` and this step is vacuous,
+        # which is why the real assertion lives in tests/test_probe.py.
+        run: |
+          HOME_DIR=$(examples/build.sh)
+          whichrc --home "$HOME_DIR" > out.txt || test $? -le 1
+          # Only bash's own block: every shell has a `command over ssh` row,
+          # and sh's says `nothing` whatever bash does.
+          awk '/^bash /{f=1;next} f&&/^$/{exit} f' out.txt > bash-rows.txt
+          cat bash-rows.txt
+          grep -q '^  command  *nothing$' bash-rows.txt \
+            || { echo "bash's plain command row changed"; exit 1; }
+          if grep -q '^  command over ssh  *nothing$' bash-rows.txt; then
+            echo "this bash does not source ~/.bashrc for an sshd-started shell"
+          else
+            grep -q '^  command over ssh  *\.bashrc$' bash-rows.txt
+          fi
+
+      - name: bash_logout is not reported as a file nothing reads
+        # The bug that made the probe stop using `-c :`. bash runs this file
+        # every time you log out, and the first version of the tool called it
+        # dead. If it ever shows up as a finding again, the probe has gone
+        # back to a shape that cannot see it.
+        run: |
+          HOME_DIR=$(examples/build.sh)
+          whichrc --home "$HOME_DIR" -q > findings.txt || test $? -le 1
+          cat findings.txt
+          if grep -q '\.bash_logout' findings.txt; then
+            echo "bash_logout reported as unread; the probe stopped seeing logout files"
+            exit 1
+          fi
+
+      - name: shadowing blames the file that caused it and nothing else
+        # .bash_logout is read in the same round as .bash_profile and has
+        # nothing to do with why .bash_login never runs. Naming it would make
+        # the explanation wrong in the one place anyone reads closely.
+        run: |
+          HOME_DIR=$(examples/build.sh)
+          line=$(whichrc --home "$HOME_DIR" -q | grep '\.bash_login:') || true
+          printf '%s\n' "$line"
+          printf '%s\n' "$line" | grep -q 'shadowed: bash would read it in login interactive'
+          if printf '%s\n' "$line" | grep -q 'bash_logout'; then
+            echo "the blame narrowing has stopped working"; exit 1
+          fi
+
+      - name: the text layer finds the sourcing line the README quotes
+        run: |
+          HOME_DIR=$(examples/build.sh)
+          # The $PS1 below is the text being written to the file, not an
+          # expansion, and this is the exact line the README tells you to run.
+          # shellcheck disable=SC2016
+          printf '\n[ -z "$PS1" ] && return\n. ~/.bashrc\n' >> "$HOME_DIR/.bash_profile"
+          whichrc --home "$HOME_DIR" > sourced.txt || test $? -le 1
+          cat sourced.txt
+          grep -q 'except that \.bash_profile:6 sources it' sourced.txt
+
+      - name: a home directory with nothing in it finds nothing and exits 0
+        run: |
+          mkdir -p empty-home
+          whichrc --home empty-home
+
+      - name: it does not crash on this runner's own home directory
+        # Not asserted as clean -- a runner's dotfiles are not ours to
+        # control. Asserted as not crashing, and shown in the log.
+        run: whichrc || test $? -le 1
+
+      - name: json stays parseable and carries the rounds
+        run: |
+          HOME_DIR=$(examples/build.sh)
+          whichrc --home "$HOME_DIR" --json > out.json || test $? -le 1
+          python -c "
+          import json, sys
+          d = json.load(open('out.json'))
+          bash = next(s for s in d['observed'] if s['shell'] == 'bash')
+          login = next(m for m in bash['modes'] if m['mode'] == 'login interactive')
+          assert login['reads'] == ['.bash_profile', '.bash_logout'], login
+          assert ['.bash_login'] in login['rounds'], login['rounds']
+          print('ok')
+          "
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: |
+          bash <(curl -sSf https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
