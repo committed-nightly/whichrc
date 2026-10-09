@@ -14,7 +14,7 @@ $ whichrc
 A login session here starts bash (SHELL=/bin/bash). It reads:
   ~/.bash_profile then ~/.bash_logout
 It does not read:
-  ~/.bashrc      bash reads it in interactive, and not here
+  ~/.bashrc      bash reads it in interactive and command over ssh, but not here
   ~/.bash_login  only if ~/.bash_profile were gone
   ~/.profile     only if ~/.bash_profile and ~/.bash_login were gone
 ```
@@ -47,7 +47,7 @@ $ whichrc --home "$HOME_DIR"
 A login session here starts bash (SHELL=/bin/bash). It reads:
   .bash_profile then .bash_logout
 It does not read:
-  .bashrc      bash reads it in interactive, and not here
+  .bashrc      bash reads it in interactive and command over ssh, but not here
   .bash_login  only if .bash_profile were gone
   .profile     only if .bash_profile and .bash_login were gone
 
@@ -58,7 +58,7 @@ bash  /usr/bin/bash  (GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu))
   login               .bash_profile
   interactive         .bashrc
   command             nothing
-  command over ssh    nothing
+  command over ssh    .bashrc
   as sh, login        .profile
   as sh, interactive  nothing
 
@@ -142,7 +142,7 @@ $ whichrc --home "$HOME_DIR" | head -5
 A login session here starts bash (SHELL=/bin/bash). It reads:
   .bash_profile then .bash_logout
 It does not read:
-  .bashrc      bash reads it in interactive, and not here
+  .bashrc      bash reads it in interactive and command over ssh, but not here
                except that .bash_profile:6 sources it -- if that line runs, this one does too. Text, not observed.
 ```
 
@@ -166,15 +166,32 @@ time you log out — as a file nothing reads. The probe now hands the shell
 `/dev/null` as stdin and no command, which is what a session looks like from
 the shell's side.
 
-**Whether `ssh you@host 'cmd'` reads `~/.bashrc` is a compile-time option.**
-bash sources `~/.bashrc` for a non-interactive shell started by sshd if
-`SSH_SOURCE_BASHRC` was defined when it was built, or if `getpeername()` says
-its stdin is a network connection. On the Ubuntu bash this was written against
-neither applies, and the `command over ssh` row says `nothing`. On a bash built
-with that option it will say `.bashrc`. Both answers are right about their own
-machine, which is why whichrc asks yours rather than telling you. (That row is
-probed with a real loopback TCP socket on stdin, because `SSH_CLIENT` in the
-environment is not enough to satisfy the check.)
+**`ssh you@host 'cmd'` reads `~/.bashrc`, and the probe nearly said it
+doesn't.** bash sources `~/.bashrc` for a non-interactive shell started by
+sshd if `SSH_SOURCE_BASHRC` was defined when it was built, or if
+`getpeername()` says its stdin is a network connection — but either way, only
+when `SHLVL` says the shell is top-level. A probe inherits `SHLVL` from the
+shell that ran it, so the first version of this got `nothing` for that row and
+a confident paragraph here explaining that Ubuntu's bash must not be built
+with `SSH_SOURCE_BASHRC`. It is. One variable, and the tool was wrong about
+the mode whose answer people most want:
+
+```
+$ H=$(mktemp -d); echo 'echo bashrc ran' > "$H/.bashrc"
+
+$ HOME=$H SSH_CLIENT="1.2.3.4 5 22" env -u SHLVL bash -c true
+bashrc ran
+
+$ HOME=$H SSH_CLIENT="1.2.3.4 5 22" SHLVL=1 bash -c true
+$
+```
+
+The probe now drops `SHLVL`, because the shell sshd starts is top-level and so
+is the one `login` starts. That row is also probed with a real loopback TCP
+socket on stdin, since `SSH_CLIENT` in the environment alone does not satisfy
+`getpeername()`. On a bash built without the option your machine will say
+`nothing` there, and that will be the right answer for your machine, which is
+the entire point.
 
 That is also how shadowing is worked out. Rather than encode "the first of
 these three wins", whichrc probes, deletes whatever got read, and probes

@@ -148,6 +148,61 @@ def test_bash_called_as_sh_reads_profile() -> None:
     assert result.read_now == (".profile",)
 
 
+def test_the_probe_environment_drops_shlvl_and_the_file_naming_vars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The invariant behind the SHLVL fix, asserted where it cannot be vacuous.
+
+    bash's "was I started by sshd" branch is also gated on `shell_level < 2`,
+    so a probe that inherits SHLVL from the shell that ran whichrc reports
+    that `ssh host cmd` does not read ~/.bashrc on a machine where it does.
+    A shell started by sshd or by login is top-level, so the probe must be.
+    """
+    for var in ("SHLVL", "BASH_ENV", "ENV", "ZDOTDIR"):
+        monkeypatch.setenv(var, "3" if var == "SHLVL" else "/home/you/something")
+    env = probe._probe_env(tmp_path, COMMAND)
+    assert "SHLVL" not in env
+    for var in probe.SCRUBBED:
+        assert var not in env
+    assert env["HOME"] == str(tmp_path)
+
+
+@needs_bash
+def test_the_parent_shell_level_does_not_change_the_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same thing through the front door, on the mode where it showed up.
+
+    Vacuous on a bash without SSH_SOURCE_BASHRC, where both answers are
+    "nothing". Not vacuous on one with it, which is what Ubuntu ships.
+    """
+    answers = []
+    for level in (None, "1", "5"):
+        monkeypatch.delenv("SHLVL", raising=False)
+        if level is not None:
+            monkeypatch.setenv("SHLVL", level)
+        result = probe.observe(Path(BASH), OVER_SSH, (".bashrc",), timeout=5)
+        if result.unprobed:
+            pytest.skip(f"no loopback socket here: {result.unprobed}")
+        answers.append(result.rounds)
+    assert len(set(answers)) == 1, answers
+
+
+@needs_bash
+def test_the_ssh_mode_never_reads_less_than_the_plain_command_mode() -> None:
+    """Whether `ssh host cmd` reads ~/.bashrc is a build-time option plus a
+    getpeername() check, so the answer belongs to the machine. What holds on
+    any build is that the ssh shape is the plain shape with more reasons to
+    read something -- so if this ever reads *less*, the socket plumbing or the
+    environment has broken, not bash."""
+    names = (".bashrc",)
+    plain = probe.observe(Path(BASH), COMMAND, names, timeout=5)
+    over_ssh = probe.observe(Path(BASH), OVER_SSH, names, timeout=5)
+    if over_ssh.unprobed:
+        pytest.skip(f"no loopback socket here: {over_ssh.unprobed}")
+    assert set(plain.read_now) <= set(over_ssh.read_now)
+
+
 @needs_bash
 def test_the_ssh_mode_gets_a_real_socket_or_says_so() -> None:
     """Whether bash reads ~/.bashrc for `ssh host cmd` is a build-time option

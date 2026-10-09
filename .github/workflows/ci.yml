@@ -67,7 +67,7 @@ jobs:
           cat out.txt
           grep -qx 'A login session here starts bash (SHELL=/usr/bin/bash). It reads:' out.txt
           grep -qx '  .bash_profile then .bash_logout' out.txt
-          grep -q '^  \.bashrc  *bash reads it in interactive, and not here$' out.txt
+          grep -q '^  \.bashrc  *bash reads it in interactive and command over ssh, but not here$' out.txt
           grep -q '^  \.bash_login  *only if \.bash_profile were gone$' out.txt
           grep -q '^  \.profile  *only if \.bash_profile and \.bash_login were gone$' out.txt
 
@@ -88,6 +88,28 @@ jobs:
           else
             echo "no zsh here, so ~/.zshrc is read by nothing"
             grep -q 'zsh is not installed on this machine' out.txt
+          fi
+
+      - name: the ssh mode is probed as a top-level shell
+        # bash only sources ~/.bashrc for an sshd-started shell when SHLVL
+        # says it is top-level, so a probe that inherits SHLVL reports
+        # `nothing` for the mode whose answer people most want. That shipped
+        # in the first draft of the README. On a bash built without
+        # SSH_SOURCE_BASHRC both rows are `nothing` and this step is vacuous,
+        # which is why the real assertion lives in tests/test_probe.py.
+        run: |
+          HOME_DIR=$(examples/build.sh)
+          whichrc --home "$HOME_DIR" > out.txt || test $? -le 1
+          # Only bash's own block: every shell has a `command over ssh` row,
+          # and sh's says `nothing` whatever bash does.
+          awk '/^bash /{f=1;next} f&&/^$/{exit} f' out.txt > bash-rows.txt
+          cat bash-rows.txt
+          grep -q '^  command  *nothing$' bash-rows.txt \
+            || { echo "bash's plain command row changed"; exit 1; }
+          if grep -q '^  command over ssh  *nothing$' bash-rows.txt; then
+            echo "this bash does not source ~/.bashrc for an sshd-started shell"
+          else
+            grep -q '^  command over ssh  *\.bashrc$' bash-rows.txt
           fi
 
       - name: bash_logout is not reported as a file nothing reads

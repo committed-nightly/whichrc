@@ -204,7 +204,12 @@ def _login_story(report: Report, timeout: float) -> LoginStory | None:
                 m.mode.name for m in entry.modes if name in m.read_now and m.mode.name != LOGIN_MODE
             ]
             if elsewhere:
-                reason = f"{shell.name} reads it in {', '.join(elsewhere)}, and not here"
+                where = (
+                    elsewhere[0]
+                    if len(elsewhere) == 1
+                    else ", ".join(elsewhere[:-1]) + f" and {elsewhere[-1]}"
+                )
+                reason = f"{shell.name} reads it in {where}, but not here"
             else:
                 reason = f"{shell.name} does not read it in any mode"
         found = men.scan(read_here, [name])

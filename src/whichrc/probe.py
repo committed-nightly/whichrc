@@ -37,6 +37,17 @@ from .modes import Mode
 #: which is the one thing this module promises not to do.
 SCRUBBED = ("BASH_ENV", "ENV", "ZDOTDIR", "SHELLOPTS", "BASHOPTS")
 
+#: SHLVL has to go too, for a different reason. bash's "was I started by
+#: sshd" branch is also gated on `shell_level < 2`, so a probe run from inside
+#: a shell inherits SHLVL=2 and the branch never fires -- and the tool then
+#: reports that `ssh host cmd` does not read ~/.bashrc on a machine where it
+#: does. The shell a login or sshd starts is top-level, so the probe is too.
+#:
+#: Found the hard way: the first version of this file had the wrong answer in
+#: the README, with an explanation of why bash was not built with
+#: SSH_SOURCE_BASHRC. It was.
+TOP_LEVEL = ("SHLVL",)
+
 DEFAULT_TIMEOUT = 10.0
 
 
@@ -100,7 +111,7 @@ def _stdin_for(mode: Mode) -> Iterator[int]:
 
 
 def _probe_env(home: Path, mode: Mode) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if k not in SCRUBBED}
+    env = {k: v for k, v in os.environ.items() if k not in SCRUBBED + TOP_LEVEL}
     env["HOME"] = str(home)
     env.update(mode.env)
     return env
