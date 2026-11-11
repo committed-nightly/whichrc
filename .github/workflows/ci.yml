@@ -27,7 +27,11 @@ jobs:
         run: bash --version | head -1
 
       - run: pip install -e ".[dev]"
-      - run: pytest -q
+      # Not `pytest -q`: pyproject already sets addopts = "-q", and the second
+      # one makes it -qq, which prints no pass count at all -- so a run that
+      # skipped the five new tests would look exactly like one that passed
+      # them. logbook#52.
+      - run: pytest
 
   lint:
     runs-on: ubuntu-latest
@@ -76,18 +80,38 @@ jobs:
         # says so. A runner that has zsh must get the other answer, not the
         # README's -- a claim that only holds on the author's box is the
         # defect this step exists to catch.
+        #
+        # This step was that defect. No runner image it has run on has had zsh
+        # on PATH, so only the `else` had ever executed -- and the `if` could
+        # not have passed if it had been reached, because `grep -q '^  \.zshrc'`
+        # asks for the findings-block shape in the branch that has just
+        # forbidden it (this job pins SHELL=bash, so `.zshrc` can only appear
+        # on the right of a mode row). Both branches are now also checked on
+        # every runner in tests/test_dogfood.py, with --shell standing in for a
+        # zsh the image does not have. logbook#64.
         run: |
           HOME_DIR=$(examples/build.sh)
           whichrc --home "$HOME_DIR" > out.txt || test $? -le 1
+          whichrc --home "$HOME_DIR" -q > findings.txt || test $? -le 1
+          cat findings.txt
           if command -v zsh > /dev/null; then
             echo "zsh is installed here, so ~/.zshrc is read and is not a finding"
-            if grep -q '^/.*\.zshrc: unread' <(whichrc --home "$HOME_DIR" -q); then
+            if grep -q '^/.*\.zshrc: unread' findings.txt; then
               echo "called .zshrc unread on a machine that has zsh"; exit 1
             fi
-            grep -q '^  \.zshrc' out.txt
+            # zsh's own block, the way the ssh step slices bash's. Not
+            # `^  \.zshrc`: that shape belongs to the findings block.
+            awk '/^zsh /{f=1;next} f&&/^$/{exit} f' out.txt > zsh-rows.txt
+            cat zsh-rows.txt
+            grep -q '^  interactive  *\.zshrc$' zsh-rows.txt
           else
             echo "no zsh here, so ~/.zshrc is read by nothing"
             grep -q 'zsh is not installed on this machine' out.txt
+            # The control for the guard above, and the witness it never had:
+            # on this machine the line that guard forbids is the right answer,
+            # so the pattern is one the tool still produces rather than one
+            # that quietly stopped being printed.
+            grep -q '^/.*\.zshrc: unread' findings.txt
           fi
 
       - name: the ssh mode is probed as a top-level shell
@@ -112,19 +136,39 @@ jobs:
             grep -q '^  command over ssh  *\.bashrc$' bash-rows.txt
           fi
 
-      - name: bash_logout is not reported as a file nothing reads
-        # The bug that made the probe stop using `-c :`. bash runs this file
-        # every time you log out, and the first version of the tool called it
-        # dead. If it ever shows up as a finding again, the probe has gone
-        # back to a shape that cannot see it.
+      - name: the findings list for the example is exactly these two
+        # The bug that made the probe stop using `-c :`. bash runs
+        # ~/.bash_logout every time you log out, and the first version of the
+        # tool called it dead. If it shows up as a finding again, the probe has
+        # gone back to a shape that cannot see it.
+        #
+        # This was `if grep -q '\.bash_logout' findings.txt; then exit 1; fi`,
+        # which passed when the pattern was absent for any reason -- including
+        # the list being empty, which is the one failure it was most likely to
+        # meet. The whole list is compared instead: a third finding fails the
+        # count, and a list that stopped being produced fails it too.
+        # --shell pins bash so the count does not depend on whether this
+        # runner has a zsh. The control that proves the list can hold
+        # `.bash_logout` is in tests/test_dogfood.py, where the probe can be
+        # broken on purpose; a negated grep here could never have had one.
+        # logbook#64.
         run: |
           HOME_DIR=$(examples/build.sh)
-          whichrc --home "$HOME_DIR" -q > findings.txt || test $? -le 1
-          cat findings.txt
-          if grep -q '\.bash_logout' findings.txt; then
-            echo "bash_logout reported as unread; the probe stopped seeing logout files"
-            exit 1
-          fi
+          whichrc --home "$HOME_DIR" --shell "$(command -v bash)" -q > pinned.txt \
+            || test $? -le 1
+          cat pinned.txt
+          test "$(wc -l < pinned.txt)" -eq 2
+          # Drop the throwaway home's path so the two patterns below are
+          # literals. Spelling them with "$HOME_DIR" in them works, but puts
+          # them under deadassert's "not decided" -- it cannot tell a pattern
+          # holding a $ from one that lost an expansion -- and making the
+          # auditing tool blinder is a poor trade for a fix it prompted.
+          sed "s|^$HOME_DIR/||" pinned.txt > names.txt
+          cat names.txt
+          grep -qxF '.bash_login: shadowed: bash would read it in login interactive only if .bash_profile were gone' names.txt
+          # Deliberately a prefix: which sentence follows depends on whether
+          # this runner has a zsh that went unprobed, and both are correct.
+          grep -q '^\.zshrc: unread: ' names.txt
 
       - name: shadowing blames the file that caused it and nothing else
         # .bash_logout is read in the same round as .bash_profile and has
